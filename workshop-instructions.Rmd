@@ -1,0 +1,401 @@
+---
+title: "LDL R Workshop"
+author: "Lai Ka Yau, Ryan"
+date: "2019/6/11"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("G:\\我的雲端硬碟\\LDL\\spirantisation")
+```
+
+## Understanding mixed models
+Let's first look at the form of the mixed-effect logistic regression model. Before we start on the mixed model, let's first examine the vanilla logistic regression model:
+
+$\log \left( \frac{p}{1-p} \right) = \beta_0 + \beta_1 X_1 + \beta_2 X_2 + \beta_{12} X_1 X_2$
+
+where $p$ is the probability that the response is correct, $X_1$ is an indicator function which is 1 if the condition is natural and 0 otherwise, $X_2$ is the indicator function which is 1 if the condition involves production and 0 otherwise. The parameters that need to be estimated from the data are $\beta_0$, $\beta_1$, $\beta_2$, $\beta_{12}$. The function $g(p) = \log \left( \frac{p}{1-p} \right)$ is called the logit function. If you are interested in the theory of generalised linear models, this is called the link function of the model.
+
+To understand what the $\beta$'s mean, let's look at the form of the equation under our four condiditons:
+
+$\log \left( \frac{P(X|\text{unnatural, perception})}{1-P(X|\text{unnatural, perception})} \right) = \beta_0$
+
+$\log \left( \frac{P(X|\text{natural, perception})}{1-P(X|\text{natural, perception})} \right) = \beta_0 + \beta_1$
+
+$\log \left( \frac{P(X|\text{unnatural, production})}{1-P(X|\text{unnatural, production})} \right) = \beta_0 + \beta_2$
+
+$\log \left( \frac{P(X|\text{natural, production})}{1-P(X|\text{natural, production})} \right) = \beta_0 + \beta_1 + \beta_2 + \beta_{12}$
+
+From this you can see that the meaning of $\beta_0$ is the log-odds of correctness in the baseline condition. Now subtract the first equation from the second. You should be able to see that
+
+$\log \left( \frac{P(X|\text{natural, perception})/(1-P(X|\text{natural, perception}))}{P(X|\text{unnatural, perception})/(1-P(X|\text{unnatural, perception}))} \right) = \beta_1$
+
+
+So the meaning of $\beta_1$ is log odds ratio between the baseline condition and the natural condition. You should be able to interpret the others yourself.
+
+To get an idea of what the log odds ratio means, let's look at the data from Toro et al. (2008). In their experiment 1 (where a regularity is based on vowels), the accuracy rate was 66.6. In their experiment 2 (based on consonants), it was 54.1. So the estimated log-odds ratio would be around
+
+```{r}
+logratio = log((.666/(1-.666))/(.541/(1-.541)))
+logratio
+```
+
+Now, let's assume that different people have different baseline conditions, and that some of the items are harder than the others. This is one motivation for the logistic mixed-effect model:
+
+$\log \left( \frac{p_{ij}}{1-p_{ij}} \right) = \beta_0 + \alpha_i + \gamma_j + \beta_1 X_1 + \beta_2 X_2 + \beta_{12} X_1 X_2$
+
+where $\alpha_i$ and $\gamma_j$ refer to the random intercept of the $i$th subject and $j$th participant respectively. In a fixed-effect model, these are just more parameters to be estimated, but in a random-effect model, we pick these effects from a population. In logistic regression, this distribution is usually normal:
+
+$\alpha_i \sim N(0, \sigma_\alpha) \forall i$
+
+$\gamma_j \sim N(0, \sigma_\gamma) \forall j$
+
+In other words, a random effects model is a model in which these so-called 'group-level effects' are also modelled - we assume an underlying model (a normal distribution) for the effects. (This is the best explanation of the concept that I know of!)
+
+A final thing to note is how we can a direct formula for $p$. You can easily derive this yourself, but here it is. This is called an inverse logit function, which is a special case of the logistic function (this is where the name of the model comes from):
+
+$p = 1 / (1 + \exp(-\beta_0 - \beta_1 X_1 - \beta_2 X_2 - \beta_{12} X_1 X_2))$
+
+This is a good opportunity for us to learn to define a function in R. Unlike functions in Python, functions in R almost never change things in your environment. They only take inputs and create outputs, much like functions in mathematics. (Some packages like Keras do change things, but this is not standard practice and we should avoid doing this in our own code.)
+
+```{r}
+invlogit = function(x) {
+  1 / (1 + exp(-x))
+}
+```
+
+To better understand our model as well as how to perform arithmetic operations in R, it is instructive to create simulations of the data from the model. This will be useful again later when we do power analysis. First, we set some reasonable values of the power and sample sizes.
+
+There are a couple of things you should notice in the code. Firstly, things of the form `c(1, 2, 3)` are called vectors. They work exactly like mathematical vectors in Euclidean space. Note that in matrix operations, they are assumed to be column vectors by default, though this will only occasionally be relevant (we will see an example soon).
+
+You should also be able to see how to specify a matrix in this code. We first enter a vector with all the entries, then turn it into a matrix with a certain number of rows, 4 in this case. Note that the matrix is read vertically - so when you construct the vector, you first type in the first column, then the second column, etc. (There is a setting to change this, though.) In our case, it doesn't matter since our matrix is symmetric.
+
+```{r}
+#sample sizes
+S = 64
+I = 56
+
+#Parameter values
+beta0 = -.5 #Intercept
+beta1 = .5 #Naturalness effect
+beta2 = .75 #Production effect
+beta12 = .7 #Interaction effect
+beta = c(beta0, beta1, beta2, beta12)
+sd_subject = .5 #Standard deviations of subject-level effects
+sd_item = .8 #Standard deviation of the item-level intercept
+```
+
+Now we conduct some simulations. This section demonstrates several R operations.
+
+
+Let's look at the content of the function. We first define an empty data frame, which is 'data', then fill it up with content as we go. (Computationally there is a more efficient way of doing this, but I think this way is easier to understand.)
+
+We then generate the item-level effects using the function rnorm. rnorm is one of a large series of functions in R for dealing with random variables, all of which are useful, though we'll focus on rnorm for now. The format of functions beginning with r is as follows: `rdistname(no_of_variables, parameters)`. Here, we need I item-level effects, and the normal distribution is parameterised by its mean and variance, which are 0 and sd_item here respectively. The output is a vector of item effects.
+
+After generating the effects, the next step is to generate the data. We use a for loop here. Only for ... in loops are available in R, but you can easily emulate for loops in other programming languages using the seq function.
+
+We first generate the random item order. The runif function generates, by default, uniform random variables from 0 to 1, though you can use any random variable you want - it won't matter. The orderering of the random numbers can be used as the ordering of our items. currItemEffs stores the item effects in the new order.
+
+We then determine the treatment condition of the participant. Note that `%%` means modulus, i.e. the remainder of the division operation. You should be able to verify that these two expressions give us the situation of our study (i.e. first condition is natural production, second is natural perception, third is unnatural production, fourth is unnatural perception). The rep function means that we repeat the value for I times.
+
+The next step is especially instructive in terms of vector operations. `beta1` is a scalar quantity; when multiplied to `natural`, a vector, we still get a vector, consistent with mathematics. In `natural * production`, `*` is the Kronecker product, not the dot product. When `beta0 + subject_effs[s,1]`, a scalar, is added to `currItemEffs`, a vector, R automatically adds the scalar quantity to every entry of the vector, unlike in mathematics.
+
+Finally, we use the invlogit function from above to calculate the probability of the items being correct. The invlogit function accepts a vector and applies the invlogit function to each entry of the vector.
+
+We then use the rbinom function to produce the data. Note that p is a vector; r will automatically use the first value for the first random variable, the second value for the second random variable, etc.
+
+Finally, we construct a data frame from the data using the `data.frame` function and bind it to the grand data frame.
+
+```{r}
+getData = function(S, I, phi, gamma, sd_subject, sd_item, beta0, beta1, beta2, beta12){
+  data = data.frame() #Empty data frame
+  
+  #Generate random effects
+  item_effs = rnorm(I,0,sd_item) #Generate item effects
+  subject_effs = rnorm(S,0,sd_subject)
+  
+  #Generate simulated data
+  for(s in 1:S){
+    #Randomising item order
+    itemOrder = order(runif(I))
+    currItemEffs = item_effs[itemOrder]
+    
+    #Determining the condition of the current participant
+    natural = rep(ceiling(s/2) %% 2, I)
+    production = rep(1 - ceiling(s-1) %% 2, I)
+    
+    #Create the probabilities for each item
+    p = invlogit(beta1 * natural +
+                 beta2 * production +
+                 beta12 * natural * production +
+                 beta0 + subject_effs[s] + currItemEffs)
+    subjectData = rbinom(I,1,p) #Generate the data
+    
+    data = rbind(data, data.frame(subject = s, trial = 1:I, item = itemOrder, subitem = itemOrder, correct = subjectData, natural = natural, production = production))
+  }
+  return(data)
+}
+
+fakeData = getData(S, I, phi, gamma, sd_subject, sd_item, beta0, beta1, beta2, beta12)
+head(fakeData) #Display the top part of the data frame
+
+```
+
+## Power analysis
+How much power do we have to detect the effects in the model? In other words, given our current model, what are the chances that we'll be able to reject the null hypothesis? Let's explore this a bit. We will generate a bunch of random datasets, then apply our analysis method.
+
+Let's first write a function to generate the models. We first need a lme4-type formula for our model. (This syntax is also used in other packages like brms.) We use + signs to separate the fixed effects. Subject-level effects are enclosed in `( | subject)` while item-level effects are enclosed in `( | item)`.
+
+Next, we use the `glmer` function to fit our model. The glmer function needs three parameters at least: The formula, the data, and the 'family' - which includes our distribution assumption (here binomial - actually Bernoulli to be precise) and the link function (here logistic).
+
+
+```{r}
+library(lme4)
+
+modelFormula = "correct ~ 1 + natural + production + natural * production +  (1 | subject) + (1 | item)"
+
+fitModel = function(data, modelFormula){
+  glmer(as.formula(modelFormula), data = data, family = binomial(link="logit"),control=glmerControl(optCtrl=list(maxfun=2e4)))
+}
+
+model = fitModel(fakeData, modelFormula)
+
+summary(model) #Gives model comparison statistics and parameter values
+
+```
+
+Now let's move on to simulations. We use this to do power analysis for our study. To save memory, we won't store up all of our datasets. Instead, we'll just store the results of each dataset, specifically the p-values. Note that the p-values are divided by two because we are doing one-tailed tests.
+
+```{r}
+modelParameters = list(S=S,I=I,sd_subject=sd_subject,sd_item=sd_item,beta0=beta0,beta1=beta1,beta2=beta2,beta12 = beta12)
+
+fixPVals = function(x, pvals, mlesPos){
+  if(mlesPos[x]){
+    pvals[x]/2
+  } else {
+    1 - pvals[x]/2
+  }
+}
+
+getpvals = function(model){
+  mles = summary(model)$coefficients[2:4,1]
+  mlesPos = mles > 0
+  pvals_gen = summary(model)$coefficients[2:4,4]
+  pvals_corr = sapply(1:3, fixPVals, pvals_gen, mlesPos)
+  pvals_corr
+}
+
+#pvals = t(sapply(1:5, function(x)  getpvals(fitModel(do.call(getData, modelParameters), modelFormula)))) #This will take some time to run! Not for the impatient!
+
+```
+
+If your computer has multiple cores, you're in luck! You can do this much faster. (I won't explain the code here, but it should be pretty self-explanatory.)
+
+```{r}
+library(parallel)
+
+#Alternative for the impatient:
+cl = makeCluster(getOption("cl.cores", detectCores()),outfile="log.txt")
+clusterEvalQ(cl, {library(lme4)}) #Call the library in the clusters
+clusterExport(cl, c("modelFormula","modelParameters","getData", "getpvals", "fitModel", "invlogit", "fixPVals")) #Export the functions you need to the clusters
+pvals = t(parSapply(cl, 1:100, function(x)  getpvals(fitModel(do.call(getData, modelParameters), modelFormula)))) 
+head(pvals)
+```
+
+Note that currently we have three parameters of interest, so our significance threshold using Bonferroni correction is 0.05 / 3. Notice again how the `<` operator in R is also vectorised.
+
+```{r}
+threshold = 0.05 / 3
+rejects = colSums(pvals < threshold)/nrow(pvals)
+rejects
+```
+
+The power is fairly low for the naturalness - let's try a higher sample size to see what happens:
+
+```{r}
+modelParameters[["S"]] = 96 #Note: The [[]] operator is for choosing a single item from a list - the item itself is returned, NOT a list containing the item! For the latter, use [].
+clusterExport(cl, "modelParameters")
+#pvals = t(sapply(1:5, function(x)  getpvals(fitModel(do.call(getData, modelParameters), modelFormula)))) #This will take some time to run! Not for the impatient!
+pvals_new = t(parSapply(cl, 1:100, function(x)  getpvals(fitModel(do.call(getData, modelParameters), modelFormula)))) 
+rejects_new = colSums(pvals_new < threshold)/nrow(pvals_new)
+rejects_new
+```
+
+That's much better!
+
+You can play around with different parameter values to see what will happen!
+
+## Data wrangling
+First we'll need to do the boring task of reading the PsychoPy printouts. Unfortunately the default printouts on PsychoPy are not particularly user-friendly, so we'll have to transform it to something useful.
+
+I have prepared the files beforehand so that the titles are more informative (there were some weird titles there, like 'unnaturalsoundsdrivespplpsycho' - wonder who did this?) and to mask the names of participants. (Incidentally, I did this using Bulk Rename Utility - great tool.) I've compiled a list of the data files in a .csv. I use this using the `read.csv` function in readr - I used to use the `read.csv` function in Base R, but I think `read_csv` will save you a ton of frustration.
+
+```{r}
+library(readr)
+dataFileList = read_csv("csvs\\file_list.csv", col_names = c("cond","filename"))
+head(dataFileList)
+```
+
+Now let's extract all the files. This should be done in a few seconds if your computer is fast enough. Woohoo!
+
+A few things are of note in this code snippet.
+
+* The `$` operator allows us to extract things from an object - in this case a column from a data frame. 
+* `paste0` allows us to paste multiple strings together without anything separating them.
+* `lapply` is like `sapply`, but puts results in a list instead of a matrix.`==` means 'equals' - don't confuse it with `=`!
+
+The last three lines demonstrates a technique called subsetting. Here, we are subsetting lists and vectors by removing entries corresponding to which are empty. The `which` command returns a vector containing the indices of the empty files, and by putting a `-` sign before them, we are telling R to remove them from the vector.
+
+ (If you are running this in RStudio, this is going to result in a ton of printouts, so you may want to close the printout window after running it.)
+
+```{r message=F, echo=T, results='hide', warning = F}
+fileConds = dataFileList$cond
+fileNames = dataFileList$filename
+files = lapply(dataFileList$filename, function(x) read_csv(paste0("csvs\\",x)))
+
+fileIsEmpty = sapply(files, function(file) nrow(file) == 0) #Identify empty files
+files = files[-which(fileIsEmpty)] #and kill them
+fileConds = fileConds[-which(fileIsEmpty)]
+fileNames = fileNames[-which(fileIsEmpty)]
+```
+
+Now let's write a function to handle all these files we've extracted! We need the `dplyr` package to handle this efficiently. (There are ways of doing this with just vanilla R, and I encourage everyone to learn it as well if you haven't, but we'll focus on `dplyr` for now.)
+
+This part is a bit of a monster and I can't explain every single detail, but here are the highlights:
+
+* `select` allows us to select certain COLUMNS from the data frame. If you're coming from an SQL background, note that you don't need to call select for everything under the sun!
+* `filter` allows us to filter ROWS according to certain criteria.
+* `mutate` allows us to modify columns and create new ones. This is often used with the `ifelse` function - look it up if you're interested!
+* `%>%` is called the pipe operator. `something %>% function(somethingelse)` is equivalent to `function(something, somethingelse)`. The best thing about the pipe operator is that you can use it to chain operations up! We have used this feature very extensively in our code. It makes our code much more readable; no need to spend 10 lines on wrangling the same data frame.
+* There are a few useful string manipulation functions in the end, where we deduce the date of the experiment from the file name. We probably can't cover this, but this is pretty important if you're doing corpus work, so it's probably worth looking them up if you're interested.
+
+```{r}
+library(dplyr)
+handleFile = function(file, cond, fileName){
+  months = c("May", "Jun", "Jul")
+  monthNums = c("05", "06", "07")
+  print(paste("Processing",fileName))
+  prunedFile = data.frame()
+  tryCatch({
+    if(cond == "nat_prod"){
+    prunedFile = file %>% select(item = item, choice1 = choice1, choice2 = choice2, choice3 = choice3, choice4 = choice4, corrAns = answer, givenAns = key_resp_10.keys, rt =	key_resp_10.rt) %>% #Only select info we actually need
+     mutate(correct = as.integer(corrAns == givenAns)) %>% #Determine whether an answer is correct
+     filter(!is.na(givenAns)) #Filter out unnecessary rows
+    } else if(cond == "nat_per"){
+    prunedFile = file %>% select(item = item, choice1 = a9, choice2 = a10, choice3 = a11, choice4 =	a12, corrAns = corrAns1, givenAns = key_resp_14.keys,	correct = key_resp_14.corr,	rt = key_resp_14.rt) %>%
+     filter(!is.na(givenAns))
+    #The first item of each test session seems missing. I could not recover it.
+    } else if(cond == "un_per"){
+        prunedFile = file %>% select(item = item, choice1 = a9, choice2 = a10, choice3 = a11, choice4 =	a12, corrAns = corrAns1, givenAns = key_resp_14.keys,	correct = key_resp_14.corr,	rt = key_resp_14.rt) %>%
+     filter(!is.na(givenAns))
+        wrongLine = file %>% select(item = item, choice1 = a9, choice2 = a10, choice3 = a11, choice4 =	a12, corrAns = corrAns1, givenAns = key_resp_13.keys,	correct = key_resp_13.corr,	rt = key_resp_13.rt) %>%
+     filter(!is.na(givenAns))
+        prunedFile = wrongLine %>% rbind(prunedFile)
+    } else if(cond == "un_prod"){
+    prunedFile = file %>% select(item = item3, choice1 = a1, choice2 = a2, choice3 = a3, choice4 = a4, corrAns = corrAns, givenAns = key_resp_15.keys, rt =	key_resp_15.rt) %>% #Only select info we actually need
+     mutate(correct = as.integer(corrAns == givenAns)) %>% #Determine whether an answer is correct
+     filter(!is.na(givenAns)) #Filter out unnecessary rows
+    }
+    fileNameParts = strsplit(fileName, "_")[[1]]
+    dateParts = fileNameParts[which(fileNameParts %in% months):(which(fileNameParts %in% months)+2)]
+    month = monthNums[dateParts[1] == months]
+    day = dateParts[2]
+    hour = as.integer(substring(dateParts[3],1,2))
+    min = as.integer(substring(dateParts[3],3,4))
+    date = as.Date(paste(month,day,sep="_"), "%m_%d") #Note sure if %d or %e
+    prunedFile = prunedFile %>% mutate(cond = cond, filename = fileName) %>%
+      mutate(natural = as.integer(cond %in% c("nat_prod", "nat_per")), production = as.integer(cond %in% c("nat_prod", "un_prod"))) %>%
+      mutate(displayOrder = seq(1, nrow(prunedFile), 1)) %>%
+      mutate(date, hour, min)
+  },
+  error = function(e) print(paste("Error in", fileName)))
+  prunedFile
+}
+
+prunedFiles = lapply(1:length(files), function(x) handleFile(files[[x]], fileConds[x], fileNames[x]))
+prunedFileIsEmpty = sapply(prunedFiles, function(file) nrow(file) == 0) #Identify empty files
+prunedFiles = prunedFiles[-c(which(prunedFileIsEmpty))] #and kill them
+prunedFileConds = fileConds[-c(which(prunedFileIsEmpty))]
+prunedFileNames = fileNames[-c(which(prunedFileIsEmpty))]
+prunedFiles[[2]]
+
+
+```
+
+Now let's put everything together and assign participant IDs. A few functions of note are:
+
+* `Reduce` - This function is a bit counterintuitive, but a plenty of things can be done with it. Basically, you take a function taking two parameters, in this case rbind, plus a list. Then it will apply that function first to the first two members of the list, then to the result of the first operation plus the third member of the list, until all the members of the list are covered.
+* `group_by`: exactly how it works in SQL: We get aggregated statistics about groups of data. In this case, each group is the data from one participant.
+* `ungroup`: A data frame with `group by` still 'remembers' its original form, and you have to ungroup it to treat it like a usual data frame in many ways.
+* `inner_join` - works exactly as the function in SQL. We 'join' related entries in the two data frames. In this case, we tag participant-related information (specifically the participant ID) onto the main data frame. This is especially useful if you have another file containing participant-related info.
+* `write_csv` does exactly what you think it does.
+
+```{r}
+data = Reduce(rbind,prunedFiles)
+participants = data %>% group_by(date, hour, min) %>% count() %>%
+  arrange(date, hour, min)
+participants =  participants %>% ungroup() %>% mutate(subject = seq(1,nrow(participants),1))
+head(participants)
+data = data %>% inner_join(participants, by = c("date","hour","min"))
+head(data)
+write_csv(data, "data_table.csv")
+```
+
+## Data exploration
+It may be tempting right now to start off modelling right off the bat, but that's not a good idea! It's best to first have an idea of what the raw data looks like. We can start by looking at the overall percentages. Here are some of the important functions used:
+
+* `summarise` - the best friend of `group_by`, allows us to calculate summary statistics based on the groups, like we've done here.
+* `sum` - exactly what it says on the tin.
+* `n` - count the number of rows in the group.
+
+
+```{r}
+corr_by_part = data %>% group_by(subject, cond) %>% summarise(perc = sum(correct) / n())
+corr_by_cond = data %>% group_by(cond) %>% summarise(perc = sum(correct) / n())
+head(corr_by_part)
+head(corr_by_cond)
+
+```
+
+Next we try a dot plot, which is standard for artificial language learning experiments, overlaid on a boxplot. The package we use is `ggplot2`. There's an entire semester-long course in the statistics department to teach you to use it, but let's focus just on what's most useful for us here.
+
+When dealing with `ggplot`, typically you start by calling the `ggplot` function. The first two arguments are the data frame where the data comes from, and the aesthetic mapping - which variable is mapped to which aspect of the visualisation. In our case, we only have two variables of interest - condition and percent - and those are mapped to the two axes. In more complicated pictures, we may also define size, shape, colour, etc. as tied to certain variables.
+
+After calling `ggplot`, we need to call specific functions that allow us to construct different plots. The tricky bit to remember is that you use the `+` sign, not `%>%`, for this. `geom_boxplot` and `geom_dotplot` are, again, used for exactly what you think they're used for. It's pretty hard to remember all the parameters that go into ggplot, and I usually don't either - just look up the specific plot you're drawing whenever you need to.
+
+`xlab`, `ylab` and `ggtitle` are used for the x-axis label, y-axis label and title respectively. These are frequently used and worth remembering. `scale_x_discrete` and `scale_y_continous` are for modifying the x- and y-scales - I can never remember what their parameters are called, and you can just look them up whenever you need to change those.
+
+(The x-axis is arranged in alphabetical order by default - I don't see a problem with it in our case, so I just left it as is.)
+
+```{r}
+library(ggplot2)
+dotplot = ggplot(corr_by_part, aes(x = cond, y = perc)) + 
+  geom_boxplot() +
+  geom_dotplot(binaxis='y', stackdir='center', stackratio=1.5, dotsize=1.2) +
+  ggtitle("A dotplot and boxplot of the accuracy percentage in each condition") +
+  xlab("Condition") + ylab("Percentage correct") +
+  scale_x_discrete(labels=c("Natural perception", "Natural production", "Unnatural perception", "Unnatural production")) +
+  scale_y_continuous(limits = c(0,1))
+
+dotplot
+```
+
+Note that these plots of raw data are much more useful and informative than the 'dynamite plots' that we see in psycholinguistics! Not that dynamite plots have no role, but these graphs show us the data in a much more data-driven way.
+
+
+## Data modelling
+And finally, the 'best' part is here! It takes literally one line of code and one minute to run. 
+
+```{r}
+model = fitModel(data, modelFormula)
+summary(model)
+getpvals(model)
+```
+
+What happened to the naturalness-production interaction effect??? I have no idea!!!
+
+## References
+Toro, J. M., M. Nespor, J. Mehler, and L. L. Bonatti (2008). Finding words and rules in a speech stream. Psychological Science 19(2), 137?V144.
+
+
