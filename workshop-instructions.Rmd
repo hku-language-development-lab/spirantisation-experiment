@@ -7,7 +7,7 @@ output: html_document
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
-setwd("G:\\æˆ‘çš„é›²ç«¯ç¡¬ç¢Ÿ\\LDL\\spirantisation")
+setwd("G:/§Úªº¶³ºÝµwºÐ/LDL/spirantisation")
 ```
 
 ## Understanding mixed models
@@ -340,6 +340,12 @@ head(participants)
 data = data %>% inner_join(participants, by = c("date","hour","min"))
 head(data)
 write_csv(data, "data_table.csv")
+```
+
+Jon and Youngah found and fixed some problems with the CSV file; we now use the correct version.
+
+```{r}
+data = read_csv("data_table_corrected.csv")
 ```
 
 ## Data exploration
